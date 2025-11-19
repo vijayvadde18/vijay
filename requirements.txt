@@ -1,11 +1,39 @@
+# Core dependencies
 streamlit
 pandas
 numpy
 plotly
 scikit-learn
-groq
-ydata-profiling
-prophet
-reportlab
-xlsxwriter
 joblib
+requests
+
+# AI Engine (Groq)
+groq
+
+# Forecasting
+prophet
+
+# Auto-EDA
+ydata-profiling
+
+# PDF & PPTX export
+reportlab
+python-pptx
+xlsxwriter
+
+# Semantic Search
+sentence-transformers
+faiss-cpu
+
+# Notebook Mode (in-app code editor)
+streamlit-ace
+
+# Time Series Anomaly Detection
+ruptures
+
+# Database connectors
+sqlalchemy
+
+# Optional utilities
+openpyxl
+
