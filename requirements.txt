@@ -1,6 +1,11 @@
 streamlit
 pandas
-matplotlib
-seaborn
 numpy
-google-generativeai
+plotly
+scikit-learn
+groq
+ydata-profiling
+prophet
+reportlab
+xlsxwriter
+joblib
