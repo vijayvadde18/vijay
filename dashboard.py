@@ -16,8 +16,10 @@ if not GEMINI_API_KEY:
     st.warning("Gemini API Key not found. Please add GEMINI_API_KEY to Streamlit secrets.")
 else:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")  # free + fast
+    model = genai.GenerativeModel("gemini-1.5-pro-latest")
 
+    
+    
 
 def get_gemini_response(prompt):
     """Helper to call Gemini with safe error handling."""
@@ -151,4 +153,5 @@ elif page == "AI Chat":
 
         st.subheader("Response")
         st.write(res)
+
 
