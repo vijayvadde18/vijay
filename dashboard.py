@@ -1,179 +1,192 @@
+import os
+import time
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import subprocess
-import json
-import io
+from openai import OpenAI
+from openai.error import OpenAIError  # may raise different exceptions depending on sdk
 
-st.set_page_config(page_title="Offline AI Analytics Dashboard", layout="wide")
+st.set_page_config(page_title="AI Analytics (Online)", layout="wide")
 
-# -------------------------------
-# OLLAMA CHAT FUNCTION (OFFLINE)
-# -------------------------------
-def ollama_chat(prompt, model="llama3.1"):
-    """Send prompt to local Ollama model and return the response text."""
-    try:
-        process = subprocess.Popen(
-            ["ollama", "run", model],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+# -----------------------
+# Initialize OpenAI client
+# -----------------------
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY", None)
 
-        prompt = prompt + "\n"
-        output, error = process.communicate(prompt.encode("utf-8"))
+if not OPENAI_API_KEY:
+    st.warning("OpenAI API key not found. Please add OPENAI_API_KEY to your Streamlit secrets.")
+    # still continue so user can upload and see EDA without AI
+    client = None
+else:
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
-        output = output.decode("utf-8", errors="ignore")
-        error = error.decode("utf-8", errors="ignore")
+# -----------------------
+# Helper: call OpenAI with retries
+# -----------------------
+def get_ai_insights(prompt, model="gpt-4o-mini", max_retries=3, backoff=2):
+    if client is None:
+        return "AI not configured. Add OPENAI_API_KEY to Streamlit secrets to enable AI insights."
 
-        if error.strip():
-            return f"Ollama Error:\n{error}"
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=800,
+            )
+            # adapt depending on SDK: get text safely
+            text = response.choices[0].message["content"]
+            return text
 
-        if output.strip() == "":
-            return "⚠️ No AI output. Check if the model is installed."
+        except Exception as e:
+            errstr = str(e)
+            # Common actionable messages
+            if "401" in errstr or "invalid_api_key" in errstr.lower():
+                return "Authentication error: your API key is invalid. Check your OpenAI key in Streamlit secrets."
+            if "429" in errstr or "quota" in errstr.lower() or "insufficient_quota" in errstr.lower():
+                return ("Quota error: your account quota may be exhausted. "
+                        "Check OpenAI billing or try again later.")
+            # transient -> retry
+            if attempt < max_retries:
+                time.sleep(backoff ** attempt)
+                continue
+            # final fallback
+            return f"AI request failed after {max_retries} attempts. Error: {errstr}"
 
-        return output
+# -----------------------
+# Sidebar / Navigation
+# -----------------------
+st.sidebar.title("Navigation")
+page = st.sidebar.radio("Go to:", ["Upload", "Summary", "Visualizations", "AI Insights", "AI Chat"])
 
-    except Exception as e:
-        return f"Error running Ollama: {e}"
-
-
-
-# -------------------------------
-# SIDEBAR NAVIGATION
-# -------------------------------
-st.sidebar.title("📊 Navigation")
-page = st.sidebar.radio("Go to:", ["Dataset Upload", "Data Summary", "Visualizations", "AI Insights", "AI Chat"])
-
-
-
-# -------------------------------
-# SESSION STATE
-# -------------------------------
 if "df" not in st.session_state:
     st.session_state.df = None
 
+# -----------------------
+# Upload Page
+# -----------------------
+if page == "Upload":
+    st.title("📁 Upload CSV")
+    uploaded = st.file_uploader("Upload your CSV file", type=["csv"])
+    if uploaded:
+        try:
+            df = pd.read_csv(uploaded)
+            st.session_state.df = df
+            st.success("File loaded.")
+            st.dataframe(df.head())
+        except Exception as e:
+            st.error(f"Failed to read CSV: {e}")
 
-
-# -------------------------------
-# PAGE 1: DATA UPLOAD
-# -------------------------------
-if page == "Dataset Upload":
-    st.title("📁 Upload Your Dataset (CSV)")
-
-    uploaded_file = st.file_uploader("Upload a CSV file", type=["csv"])
-
-    if uploaded_file:
-        df = pd.read_csv(uploaded_file)
-        st.session_state.df = df
-
-        st.success("File uploaded successfully!")
-        st.dataframe(df.head())
-
-
-
-# -------------------------------
-# PAGE 2: DATA SUMMARY
-# -------------------------------
-elif page == "Data Summary":
-    st.title("📘 Data Summary")
-
+# -----------------------
+# Summary Page
+# -----------------------
+elif page == "Summary":
+    st.title("📊 Data Summary")
     df = st.session_state.df
     if df is None:
-        st.warning("Upload a dataset first!")
+        st.info("Upload a file in the Upload tab first.")
     else:
-        st.subheader("🔹 Dataset Preview")
+        st.subheader("Preview")
         st.dataframe(df.head())
-
-        st.subheader("🔹 Summary Statistics")
-        st.write(df.describe())
-
-        st.subheader("🔹 Missing Values")
+        st.subheader("Summary Statistics")
+        st.write(df.describe(include="all"))
+        st.subheader("Missing Values")
         st.write(df.isnull().sum())
 
-
-
-# -------------------------------
-# PAGE 3: VISUALIZATIONS
-# -------------------------------
+# -----------------------
+# Visualizations Page
+# -----------------------
 elif page == "Visualizations":
-    st.title("📈 Data Visualizations")
-
+    st.title("📈 Visualizations")
     df = st.session_state.df
     if df is None:
-        st.warning("Upload a dataset first!")
+        st.info("Upload a file in the Upload tab first.")
     else:
-        st.subheader("Select column for visualization")
+        numeric = df.select_dtypes(include=["number"]).columns.tolist()
+        if not numeric:
+            st.warning("No numeric columns for plotting.")
+        else:
+            chart = st.selectbox("Chart type", ["Line", "Histogram", "Correlation Heatmap"])
+            if chart == "Line":
+                col = st.selectbox("Select column", numeric)
+                fig, ax = plt.subplots()
+                ax.plot(df[col].reset_index(drop=True))
+                ax.set_title(f"{col} trend")
+                st.pyplot(fig)
+            elif chart == "Histogram":
+                col = st.selectbox("Select column", numeric)
+                fig, ax = plt.subplots()
+                ax.hist(df[col].dropna(), bins=30)
+                ax.set_title(f"{col} distribution")
+                st.pyplot(fig)
+            else:
+                fig, ax = plt.subplots(figsize=(8, 6))
+                sns.heatmap(df.corr(), annot=True, fmt=".2f", ax=ax)
+                st.pyplot(fig)
 
-        numeric_cols = df.select_dtypes(include=["int64", "float64"]).columns
-
-        chart_type = st.selectbox("Choose a chart type", ["Line Chart", "Histogram", "Correlation Heatmap"])
-
-        if chart_type == "Line Chart":
-            col = st.selectbox("Select numeric column", numeric_cols)
-            fig, ax = plt.subplots()
-            ax.plot(df[col])
-            ax.set_title(f"{col} Trend")
-            st.pyplot(fig)
-
-        elif chart_type == "Histogram":
-            col = st.selectbox("Select numeric column", numeric_cols)
-            fig, ax = plt.subplots()
-            ax.hist(df[col], bins=20)
-            ax.set_title(f"{col} Distribution")
-            st.pyplot(fig)
-
-        elif chart_type == "Correlation Heatmap":
-            fig, ax = plt.subplots(figsize=(10, 5))
-            sns.heatmap(df.corr(), annot=True, cmap="coolwarm")
-            st.pyplot(fig)
-
-
-
-# -------------------------------
-# PAGE 4: AI INSIGHTS (Offline)
-# -------------------------------
+# -----------------------
+# AI Insights Page
+# -----------------------
 elif page == "AI Insights":
-    st.title("🤖 AI Insights (Offline – Ollama)")
-
+    st.title("🤖 AI-Generated Insights (Online)")
     df = st.session_state.df
     if df is None:
-        st.warning("Upload a dataset first!")
+        st.info("Upload a file in the Upload tab first.")
     else:
-        prompt = f"""
-        You are an expert data analyst.
+        st.subheader("Dataset Preview")
+        st.dataframe(df.head())
 
-        Dataset summary:
-        {df.describe().to_string()}
+        with st.expander("Customize prompt / options"):
+            model = st.selectbox("Model", ["gpt-4o-mini", "gpt-4.1-mini", "gpt-3.5-turbo"], index=0)
+            include_columns = st.multiselect("Columns to include (empty = all)", df.columns.tolist())
+            max_tokens = st.slider("Max tokens for response", 200, 2000, 800)
 
-        Missing values:
-        {df.isnull().sum().to_string()}
+        # Build the prompt
+        use_cols = include_columns if include_columns else df.columns.tolist()
+        summary_stats = df[use_cols].describe().to_string()
+        missing = df[use_cols].isnull().sum().to_string()
 
-        Provide analysis in this format:
-        - Key trends
-        - Outliers or anomalies
-        - Business/operational recommendations
-        """
+        prompt = f"""You are an expert data analyst. Analyze the dataset summary below.
 
-        with st.spinner("AI analyzing data…"):
-            result = ollama_chat(prompt)
+Summary Statistics:
+{summary_stats}
 
-        st.subheader("📌 AI Generated Insights")
-        st.write(result)
+Missing values:
+{missing}
 
+Provide:
+- Key trends (top 3)
+- Any anomalies/outliers to investigate
+- Actionable business recommendations (3)
+"""
 
+        if st.button("Generate AI Insights"):
+            with st.spinner("Generating insights..."):
+                res = get_ai_insights(prompt, model=model, max_retries=3)
+                st.subheader("AI Insights")
+                st.write(res)
 
-# -------------------------------
-# PAGE 5: AI CHAT (Offline)
-# -------------------------------
+# -----------------------
+# AI Chat Page
+# -----------------------
 elif page == "AI Chat":
-    st.title("💬 Offline AI Chat (LLaMA + Ollama)")
+    st.title("💬 AI Chat (Online)")
+    user_prompt = st.text_area("Ask the AI (context: dataset is loaded)", height=120)
+    model = st.selectbox("Model", ["gpt-4o-mini", "gpt-4.1-mini", "gpt-3.5-turbo"], key="chat_model")
 
-    user_input = st.text_area("Ask the AI anything:")
+    if st.button("Send"):
+        if not user_prompt.strip():
+            st.warning("Write a message first.")
+        else:
+            # optionally add dataset context
+            df = st.session_state.df
+            if df is not None:
+                context = f"\n\nDataset preview:\n{df.head(5).to_string()}\n\n"
+            else:
+                context = ""
+            full_prompt = user_prompt + context
+            with st.spinner("Thinking..."):
+                out = get_ai_insights(full_prompt, model=model)
+                st.write(out)
 
-    if st.button("Send") and user_input.strip() != "":
-        with st.spinner("Thinking…"):
-            result = ollama_chat(user_input)
-
-        st.write(result)
